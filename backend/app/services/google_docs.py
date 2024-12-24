@@ -1,54 +1,69 @@
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-import json
 import os
-from ..config import SKIP_GOOGLE_AUTH
+import logging
+from ..exceptions import GoogleAPIError
+from ..config import SKIP_GOOGLE_AUTH, TESTING
+from unittest.mock import Mock
 
-SCOPES = ['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive']
+logger = logging.getLogger(__name__)
 
 class GoogleDocsService:
     def __init__(self):
-        self.docs_service = None
-        self.drive_service = None
-        
-        if not SKIP_GOOGLE_AUTH:
-            try:
-                credentials = service_account.Credentials.from_service_account_file(
-                    'credentials.json', scopes=SCOPES
-                )
-                self.docs_service = build('docs', 'v1', credentials=credentials)
-                self.drive_service = build('drive', 'v3', credentials=credentials)
-            except Exception as e:
-                print(f"Failed to initialize Google services: {e}")
-
-    def create_document(self, title: str, content: str):
-        if SKIP_GOOGLE_AUTH:
-            return "mock-doc-id-123"
+        if TESTING or SKIP_GOOGLE_AUTH:
+            # Mocks for testing that can raise errors
+            self.docs_service = Mock()
+            self.drive_service = Mock()
             
+            # Default success response
+            mock_doc = {'documentId': 'mock-doc-id'}
+            create_mock = Mock()
+            create_mock.execute.return_value = mock_doc
+            
+            # Configure the mock to allow error injection
+            self.docs_service.documents.return_value.create.return_value = create_mock
+            self.docs_service.documents.return_value.create.side_effect = None  # Can be overridden in tests
+        else:
+            try:
+                cred_path = os.getenv("GOOGLE_CREDENTIALS_PATH")
+                if not cred_path or not os.path.exists(cred_path):
+                    raise GoogleAPIError("Google credentials file not found")
+
+                creds = service_account.Credentials.from_service_account_file(cred_path)
+                self.docs_service = build('docs', 'v1', credentials=creds)
+                self.drive_service = build('drive', 'v3', credentials=creds)
+            except Exception as e:
+                raise GoogleAPIError(f"Failed to initialize Google services: {str(e)}")
+
+    async def create_document(self, title: str, content: str) -> dict:
+        if not self.docs_service:
+            raise GoogleAPIError("Docs service not initialized")
+
         try:
-            if not self.docs_service:
-                return None
-                
-            document = self.docs_service.documents().create(
-                body={"title": title}
-            ).execute()
+            doc = self.docs_service.documents().create(body={'title': title}).execute()
+            doc_id = doc.get('documentId')
+            if not doc_id:
+                raise GoogleAPIError("Failed to get document ID from response")
 
+            # Do batch update
             self.docs_service.documents().batchUpdate(
-                documentId=document.get('documentId'),
-                body={
-                    'requests': [{
-                        'insertText': {
-                            'location': {
-                                'index': 1
-                            },
-                            'text': content
-                        }
-                    }]
-                }
+                documentId=doc_id,
+                body={'requests': [{
+                    'insertText': {
+                        'location': {'index': 1},
+                        'text': content
+                    }
+                }]}
             ).execute()
 
-            return document.get('documentId')
-        except Exception as e:
-            print(f"Error creating document: {e}")
-            return None 
+            # Set permissions, etc.
+            self.drive_service.permissions().create(
+                fileId=doc_id,
+                body={'role': 'reader', 'type': 'anyone'}
+            ).execute()
+
+            return {'doc_id': doc_id, 'doc_url': f"https://docs.google.com/document/d/{doc_id}/edit"}
+
+        except Exception as exc:
+            logger.error(f"Error creating document: {exc}")
+            raise GoogleAPIError(f"Failed to create Google document: {str(exc)}") 

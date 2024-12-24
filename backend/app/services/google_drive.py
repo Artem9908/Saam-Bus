@@ -1,74 +1,93 @@
-import os
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from io import StringIO
-from ..config import TESTING
+from io import BytesIO
+import logging
+from ..config import GOOGLE_CREDENTIALS_PATH, GOOGLE_DRIVE_FOLDER_ID, TESTING, SKIP_GOOGLE_AUTH
+from ..exceptions import GoogleAPIError
+import os
+from unittest.mock import Mock
 
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+logger = logging.getLogger(__name__)
 
 class GoogleDriveService:
     def __init__(self):
-        self.credentials = None
-        self.service = None
-        # Only authenticate if not in testing or development mode
-        if not TESTING and not os.getenv('DEVELOPMENT_MODE') == 'true':
-            self._authenticate()
+        if TESTING or SKIP_GOOGLE_AUTH:
+            self.service = Mock()
+            mock_file = {'id': 'mock-id', 'webViewLink': 'https://drive.google.com/mock-id'}
+            create_mock = Mock()
+            create_mock.execute.return_value = mock_file
+            self.service.files.return_value.create.return_value = create_mock
+        else:
+            try:
+                if not os.path.exists(GOOGLE_CREDENTIALS_PATH):
+                    raise FileNotFoundError(f"Google credentials file not found at {GOOGLE_CREDENTIALS_PATH}")
 
-    def _authenticate(self):
+                self.credentials = service_account.Credentials.from_service_account_file(
+                    GOOGLE_CREDENTIALS_PATH,
+                    scopes=['https://www.googleapis.com/auth/drive.file']
+                )
+                self.service = build('drive', 'v3', credentials=self.credentials)
+                logger.info("Successfully initialized Google Drive service")
+            except Exception as e:
+                logger.error(f"Failed to initialize Google Drive service: {e}")
+                raise GoogleAPIError(f"Failed to initialize Google Drive service: {str(e)}")
+
+    async def upload_document(self, content: str, filename: str, mime_type: str = None) -> dict:
+        """
+        Upload a document to Google Drive
+        Args:
+            content: Document content
+            filename: Name of the file
+            mime_type: MIME type of the file (optional)
+        Returns:
+            dict with doc_id and doc_url
+        """
         try:
-            # Load credentials from file if exists
-            if os.path.exists('token.json'):
-                self.credentials = Credentials.from_authorized_user_file('token.json', SCOPES)
-
-            # If no valid credentials, authenticate
-            if not self.credentials or not self.credentials.valid:
-                if os.path.exists('credentials.json'):
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        'credentials.json', SCOPES)
-                    self.credentials = flow.run_local_server(port=0)
-                    
-                    # Save credentials
-                    with open('token.json', 'w') as token:
-                        token.write(self.credentials.to_json())
-                else:
-                    raise Exception("No credentials.json file found")
-
-            self.service = build('drive', 'v3', credentials=self.credentials)
-        except Exception as e:
-            print(f"Authentication failed: {e}")
-            # Don't raise exception in constructor
-
-    def upload_document(self, content: str, filename: str) -> str:
-        # Return mock link in testing or development mode
-        if TESTING or os.getenv('DEVELOPMENT_MODE') == 'true':
-            return f"http://mock-drive-link.com/{filename}"
-
-        try:
-            if not self.service:
-                return None
-
-            # Create file metadata
             file_metadata = {'name': filename}
+            if GOOGLE_DRIVE_FOLDER_ID:
+                file_metadata['parents'] = [GOOGLE_DRIVE_FOLDER_ID]
 
-            # Create file content
-            file_content = StringIO(content)
+            # Determine MIME type
+            if not mime_type:
+                mime_type = 'application/vnd.google-apps.document'
+                if filename.endswith('.txt'):
+                    mime_type = 'text/plain'
+                elif filename.endswith('.pdf'):
+                    mime_type = 'application/pdf'
+            
             media = MediaIoBaseUpload(
-                file_content,
-                mimetype='text/plain',
+                BytesIO(content.encode()),
+                mimetype=mime_type,
                 resumable=True
             )
 
-            # Upload file
             file = self.service.files().create(
                 body=file_metadata,
                 media_body=media,
-                fields='id, webViewLink'
+                fields='id, webViewLink',
+                supportsAllDrives=True
             ).execute()
 
-            return file.get('webViewLink')
+            # Set file permissions to anyone with link can view
+            self.service.permissions().create(
+                fileId=file.get('id'),
+                body={'type': 'anyone', 'role': 'reader'},
+                fields='id'
+            ).execute()
 
+            return {
+                'doc_id': file.get('id'),
+                'doc_url': file.get('webViewLink')
+            }
         except Exception as e:
-            print(f"Error uploading to Google Drive: {str(e)}")
-            return None
+            logger.error(f"Error uploading to Google Drive: {e}")
+            raise GoogleAPIError(f"Failed to upload document: {str(e)}")
+
+    async def delete_document(self, doc_id: str) -> None:
+        """Delete a document from Google Drive"""
+        try:
+            self.service.files().delete(fileId=doc_id).execute()
+        except Exception as e:
+            logger.error(f"Error deleting from Google Drive: {e}")
+            raise GoogleAPIError(f"Failed to delete document: {str(e)}")

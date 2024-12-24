@@ -9,7 +9,7 @@ def test_init_db(test_db):
     # Tables should be created
     inspector = inspect(test_db.get_bind())
     tables = inspector.get_table_names()
-    assert "documents" in tables
+    assert "generated_documents" in tables
 
 def test_get_db():
     """Test database session management"""
@@ -27,11 +27,16 @@ def test_get_db():
             pass
 
 def test_testing_engine():
-    """Test that we're using SQLite for testing"""
-    if TESTING:
-        engine = SessionLocal().get_bind()
-        assert str(engine.url) == "sqlite:///:memory:"
-        assert engine.dialect.name == "sqlite"
+    """Test database engine configuration in test environment"""
+    from app.database import SessionLocal
+    
+    # Get engine from session
+    engine = SessionLocal().get_bind()
+    
+    # Check that we're using SQLite for testing
+    assert engine.dialect.name == "sqlite"
+    # Check that we're using in-memory database
+    assert str(engine.url).startswith("sqlite:///:memory:")
 
 def test_db_session_cleanup():
     """Test that database sessions are properly cleaned up"""

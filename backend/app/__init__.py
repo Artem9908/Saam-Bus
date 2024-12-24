@@ -1,5 +1,7 @@
+from .utils.logger import setup_logger
+setup_logger()  # Initialize logging first
+
 from .database import Base, get_db, init_db
-from .models import GeneratedDocument
 from .main import app
 
-__all__ = ['Base', 'get_db', 'init_db', 'GeneratedDocument', 'app']
+__all__ = ['app', 'Base', 'get_db', 'init_db']

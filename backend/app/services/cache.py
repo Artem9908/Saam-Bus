@@ -1,71 +1,110 @@
-from functools import wraps
-import json
-import aioredis
+from typing import Optional, Any
 import logging
-from ..config import TESTING, REDIS_HOST, REDIS_PORT, REDIS_DB
+from redis import asyncio as aioredis
+from datetime import datetime
+from ..config import REDIS_HOST, REDIS_PORT, REDIS_DB, TESTING
+import json
+from .cache_decorator import cache_response
+import time
 
 logger = logging.getLogger(__name__)
 
-# Initialize Redis client
-redis_client = None
-if not TESTING:
-    try:
-        redis_client = aioredis.from_url(
-            f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}",
-            decode_responses=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize Redis client: {e}")
-
-# Use in-memory cache for testing
+# In-memory cache for testing
 IN_MEMORY_CACHE = {}
+redis_client = None
 
-def cache_response(expire_time=300):
-    def decorator(f):
-        @wraps(f)
-        async def decorated_function(*args, **kwargs):
+class RedisCache:
+    def __init__(self, host=REDIS_HOST, port=REDIS_PORT):
+        self.redis = None
+        self.host = host
+        self.port = port
+        self._cache = {}
+        self._expiry = {}
+
+    async def initialize(self):
+        """Initialize Redis connection"""
+        if not TESTING and not self.redis:
             try:
-                key = f"{f.__name__}:{str(args)}:{str(kwargs)}"
-                
-                if TESTING:
-                    # In test environment, use in-memory cache
-                    if key in IN_MEMORY_CACHE:
-                        return IN_MEMORY_CACHE[key]
-                    
-                    try:
-                        result = await f(*args, **kwargs)
-                        IN_MEMORY_CACHE[key] = result
-                        return result
-                    except Exception as e:
-                        logger.error(f"Function error in testing: {e}")
-                        raise  # Re-raise the exception without caching
-                
-                if redis_client:
-                    try:
-                        exists = await redis_client.exists(key)
-                        if exists:
-                            cached_data = await redis_client.get(key)
-                            if cached_data:
-                                return json.loads(cached_data)
-                    except Exception as e:
-                        logger.error(f"Redis error: {e}")
-                
-                result = await f(*args, **kwargs)
-                
-                if redis_client:
-                    try:
-                        await redis_client.setex(
-                            key,
-                            expire_time,
-                            json.dumps(result)
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to cache result: {e}")
-                
-                return result
+                self.redis = await aioredis.Redis(
+                    host=self.host,
+                    port=self.port,
+                    decode_responses=True
+                ).initialize()
             except Exception as e:
-                logger.error(f"Cache decorator error: {e}")
-                raise  # Re-raise the exception instead of calling the function again
-            
-        return decorated_function
-    return decorator 
+                logger.error(f"Redis connection error: {e}")
+                # Fallback to in-memory cache
+                self.redis = None
+
+    async def get(self, key: str) -> Optional[str]:
+        """Get cache entry"""
+        try:
+            if TESTING:
+                return self._cache.get(key)
+            else:
+                if self.redis:
+                    return await self.redis.get(key)
+        except Exception as e:
+            logger.error(f"Cache get error: {e}")
+        return None
+
+    async def set(self, key: str, value: str, expire_time: int = 300):
+        """Set cache entry"""
+        try:
+            if TESTING:
+                self._cache[key] = value
+                self._expiry[key] = time.time() + expire_time
+            else:
+                if self.redis:
+                    await self.redis.set(key, value, ex=expire_time)
+        except Exception as e:
+            logger.error(f"Cache set error: {e}")
+
+    async def set_document(self, doc_id: str, document: dict):
+        """Set document in cache"""
+        key = f"doc:{doc_id}"
+        await self.set(key, json.dumps(document))
+
+    async def get_document(self, doc_id: str) -> Optional[dict]:
+        """Get document from cache"""
+        key = f"doc:{doc_id}"
+        cached = await self.get(key)
+        return json.loads(cached) if cached else None
+
+    async def delete(self, key: str):
+        """Delete cache entry"""
+        try:
+            if TESTING:
+                self._cache.pop(key, None)
+            else:
+                await self.redis.delete(key)
+        except Exception as e:
+            logger.error(f"Cache delete error: {e}")
+
+    async def clear(self):
+        """Clear all cache entries"""
+        if TESTING:
+            self._cache.clear()
+        else:
+            try:
+                await self.redis.flushall()
+            except Exception as e:
+                logger.error(f"Redis clear error: {e}")
+
+    def _get_cache_key(self, method_name: str, *args, **kwargs) -> str:
+        """Generate a cache key from method name and arguments"""
+        key_parts = [method_name]
+        key_parts.extend(str(arg) for arg in args)
+        key_parts.extend(f"{k}:{v}" for k, v in sorted(kwargs.items()))
+        return ":".join(key_parts)
+
+    @cache_response(expire_time=300)
+    async def get_documents(self, *args, **kwargs):
+        """Cache wrapper for document listing"""
+        # This is just a placeholder - the actual implementation 
+        # will be provided by the document service
+        pass
+
+    async def invalidate_document(self, doc_id: str):
+        """Remove document from cache"""
+        key = f"doc:{doc_id}"
+        await self.delete(key)

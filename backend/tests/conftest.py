@@ -1,70 +1,85 @@
-from . import test_env  # This must be the first import
 import pytest
 from fastapi.testclient import TestClient
+from httpx import AsyncClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-from datetime import datetime
-from httpx import AsyncClient
-import aioredis
-
-# Import app modules after environment is set
-from app.database import Base, get_db
+from app.database import Base
 from app.main import app
-from app.models import GeneratedDocument
+from .test_config import TEST_DATABASE_URL
+import os
+from app.services.cache_decorator import IN_MEMORY_CACHE
+
+@pytest.fixture(scope="session")
+def test_app():
+    return app
+
+@pytest.fixture
+async def async_client(test_app):
+    async with AsyncClient(app=test_app, base_url="http://test") as client:
+        yield client
 
 @pytest.fixture(scope="function")
+def test_client(test_app):
+    return TestClient(test_app)
+
+@pytest.fixture(scope="session")
 def test_db():
-    """Create a fresh database for each test."""
+    """Create a fresh database for each test session"""
     engine = create_engine(
         "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        connect_args={"check_same_thread": False}
     )
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    
-    # Create all tables
     Base.metadata.create_all(bind=engine)
-    
-    def override_get_db():
-        db = TestingSessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-    
-    # Override the database dependency
-    app.dependency_overrides[get_db] = override_get_db
-    
+    TestingSessionLocal = sessionmaker(bind=engine)
     db = TestingSessionLocal()
     try:
         yield db
     finally:
         db.close()
-        Base.metadata.drop_all(bind=engine)
+
+@pytest.fixture(autouse=True)
+def setup_test_env():
+    """Ensure test environment is properly configured"""
+    os.environ["TESTING"] = "true"
+    os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+    yield
+
+# ------------------------------------------------------
+# New fixtures for "document_service" and "sample_document"
+# ------------------------------------------------------
+from datetime import datetime
+from app.services.document import DocumentService
+from app.models import GeneratedDocument
 
 @pytest.fixture
-def client(test_db):
-    """Create a test client."""
-    with TestClient(app) as test_client:
-        yield test_client
+def document_service():
+    """Return a DocumentService instance for testing."""
+    return DocumentService()
 
 @pytest.fixture
-async def async_client(test_db):
-    """Create async test client with database dependency."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        yield client
-
-@pytest.fixture(scope="function")
 def sample_document(test_db):
-    """Create a sample document in the database"""
+    """Create and return a sample document for testing."""
     doc = GeneratedDocument(
-        name="Test User",
+        name="Sample Document",
         date=datetime.now().date(),
-        amount=100.50,
-        content="Test content"
+        amount=123.45,
+        content="Sample content"
     )
     test_db.add(doc)
     test_db.commit()
-    test_db.refresh(doc)
     return doc
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_db():
+    """Create all tables before running tests"""
+    from app.database import Base, engine
+    Base.metadata.create_all(bind=engine)
+    yield
+    Base.metadata.drop_all(bind=engine)
+
+@pytest.fixture(autouse=True)
+def clear_cache():
+    """Clear the in-memory cache before each test"""
+    from app.services.cache_decorator import IN_MEMORY_CACHE
+    IN_MEMORY_CACHE.clear()
+    yield

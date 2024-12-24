@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  frontend-test:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    command: npm test
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  backend-test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: bash -c "pip install -e . && pytest -v"
+    environment:
+      - PYTHONPATH=/app
+      - TESTING=true
+      - DATABASE_URL=postgresql://test:test@db-test:5432/test_db
+      - REDIS_HOST=redis-test
+      - SKIP_GOOGLE_AUTH=true
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db-test
+      - redis-test
+
+  db-test:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=test
+      - POSTGRES_PASSWORD=test
+      - POSTGRES_DB=test_db
+
+  redis-test:
+    image: redis:6

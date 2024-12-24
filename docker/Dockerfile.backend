@@ -1,0 +1,30 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    gcc \
+    python3-dev \
+    libpq-dev \
+    netcat-traditional \
+    postgresql-client && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create directories
+RUN mkdir -p /app/credentials
+RUN mkdir -p /app/scripts
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy scripts first and set permissions
+COPY backend/scripts/db-migrate.sh /app/scripts/
+RUN chmod +x /app/scripts/db-migrate.sh
+
+COPY backend/ .
+# Copy credentials file
+COPY backend/saam-bus-2143aa7b9c18.json /app/credentials/
+RUN pip install -e .
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

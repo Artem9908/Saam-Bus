@@ -1,0 +1,30 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY frontend/package*.json ./
+
+# Clean npm cache and install dependencies with specific flags
+RUN npm cache clean --force && \
+    npm install --legacy-peer-deps --no-audit
+
+# Copy the rest of the application
+COPY frontend/ .
+
+EXPOSE 3000
+
+# Set environment variables
+ENV NODE_ENV=development \
+    WDS_SOCKET_PORT=0 \
+    WATCHPACK_POLLING=true \
+    CHOKIDAR_USEPOLLING=true \
+    FAST_REFRESH=false
+
+# Set permissions
+RUN chown -R node:node /app
+
+USER node
+
+# Start the development server
+CMD ["npm", "start"]

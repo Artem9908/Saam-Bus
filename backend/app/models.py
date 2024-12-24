@@ -1,33 +1,30 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Date, Index
-from sqlalchemy.sql import func
+from sqlalchemy import Column, Integer, String, Date, Float, Text, DateTime, text
+from datetime import datetime
 from .database import Base
 
 class GeneratedDocument(Base):
-    __tablename__ = "documents"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), index=True)
-    date = Column(Date, index=True)
-    amount = Column(Float)
-    content = Column(String)
-    doc_url = Column(String, nullable=True)
-    doc_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=func.now())
+    __tablename__ = "generated_documents"
 
-    # Create indexes
-    __table_args__ = (
-        Index('idx_name', name),
-        Index('idx_date', date),
-    )
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    date = Column(Date, nullable=False)
+    amount = Column(Float, nullable=False)
+    template_type = Column(String, nullable=True)
+    doc_id = Column(String, nullable=True)
+    doc_url = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+    google_doc_id = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
 
     def to_dict(self):
         return {
             "id": self.id,
             "name": self.name,
-            "date": str(self.date),
+            "date": self.date.strftime("%Y-%m-%d"),
             "amount": self.amount,
-            "content": self.content,
-            "doc_url": self.doc_url,
             "doc_id": self.doc_id,
-            "created_at": str(self.created_at)
+            "doc_url": self.doc_url,
+            "content": self.content,
+            "google_doc_id": self.google_doc_id,
+            "created_at": self.created_at.isoformat()
         }
