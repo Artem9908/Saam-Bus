@@ -109,12 +109,17 @@ pytest -v
 
 ## API Documentation
 
-The API documentation is available at `/docs` or `/redoc` when the backend is running.
+Detailed API documentation is available in [API.md](./API.md).
+
+The API is also available through interactive documentation:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
 
 Key endpoints:
 - `POST /generate-document`: Generate a new document
 - `GET /documents`: List all documents
-- `GET /documents?name={name}&date={date}`: Filter documents
+- `GET /documents/{document_id}`: Get specific document
+
 
 ## Database Migrations
 
